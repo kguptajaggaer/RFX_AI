@@ -4,7 +4,7 @@ import { streamDraftingConversation, UPDATE_DRAFT_FUNCTION, DRAFTING_SYSTEM_PROM
 import type { RFxDraft } from "@/types/index";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
 
   if (!profile) return NextResponse.json({ error: "Profile not found" }, { status: 403 });
 
-  const { sessionId, message, history = [] } = await request.json();
+  const { sessionId, message, history = [], currentDraft = null } = await request.json();
 
   // Load existing session messages if resuming
   let existingMessages: Array<{ role: "user" | "assistant"; content: string }> = history;
@@ -78,7 +78,8 @@ export async function POST(request: NextRequest) {
           (draft) => {
             latestDraft = draft;
             send({ type: "draft_update", draft });
-          }
+          },
+          currentDraft
         );
 
         for await (const token of generator) {

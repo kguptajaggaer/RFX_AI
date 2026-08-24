@@ -4,41 +4,38 @@ import { useState, useRef, useEffect } from "react";
 import type { RFxDraft } from "@/types/index";
 import DraftPreview from "./DraftPreview";
 import { useRouter } from "next/navigation";
+import { TEMPLATES, TEMPLATE_GREETINGS } from "@/lib/drafting-templates";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
 }
 
-// ── Quick-start scenarios ──────────────────────────────────────────────────
+// ── Quick-start scenarios — keys match TEMPLATES in lib/drafting-templates.ts ──
 const QUICK_STARTS = [
   {
     icon: "💻",
     label: "1,000 Laptops",
     description: "Engineering-grade laptops",
-    prompt:
-      "I need to source 1,000 laptops for our engineering team. We need high-performance devices with at least 32GB RAM, 1TB SSD, and a 14–16 inch display. We are open to major brands (Dell, HP, Lenovo, Apple). Delivery required to our UK headquarters within 12 weeks. Budget is approximately £1,200–£1,800 per unit. Please draft a comprehensive RFQ with detailed technical, commercial, compliance, and sustainability fields.",
+    templateKey: "laptops",
   },
   {
     icon: "🪑",
     label: "1,000 Office Chairs",
     description: "Ergonomic task & executive seating",
-    prompt:
-      "We need to procure 1,000 office chairs for our new headquarters — split into two lots: Lot 1: 700 ergonomic task chairs (EN 1335 certified, lumbar support, adjustable armrests) and Lot 2: 300 executive chairs (leather or vegan leather, high-back). Delivery and installation required in Amsterdam. Budget €250–€450 per task chair, €500–€900 per executive chair. 5-year warranty required. Please draft a detailed RFQ with full pricing per lot, technical specs, sustainability, compliance, and after-sales support fields.",
+    templateKey: "chairs",
   },
   {
     icon: "📡",
     label: "500 WiFi Routers",
     description: "Enterprise WiFi 6E access points",
-    prompt:
-      "We are sourcing 500 enterprise-grade WiFi access points for our campus network expansion. Requirements: WiFi 6E (802.11ax), tri-band, MU-MIMO, PoE+ support, centralised cloud management, WPA3 security, minimum 2 Gbps throughput per AP. Vendors must provide installation, 3-year hardware warranty, and 24/7 NOC support. Please draft a comprehensive RFQ covering pricing, technical specifications, management platform, compliance, deployment plan, and SLA terms.",
+    templateKey: "routers",
   },
   {
     icon: "🛒",
     label: "All Three Together",
     description: "Laptops + Chairs + WiFi Routers",
-    prompt:
-      "We have a major office expansion and need to procure all of the following in a single multi-lot RFQ: Lot 1 – 1,000 engineering laptops (32GB RAM, 1TB SSD, 14–16 inch, major brands, £1,200–£1,800 each, UK delivery in 12 weeks). Lot 2 – 1,000 office chairs (700 ergonomic EN1335 task chairs + 300 executive chairs, Amsterdam delivery and installation, 5-year warranty). Lot 3 – 500 enterprise WiFi 6E access points (MU-MIMO, PoE+, cloud management, 24/7 NOC support). Please draft a comprehensive multi-lot RFQ with detailed pricing per lot, full technical specs, commercial terms, certifications, sustainability fields, and weighted evaluation criteria. Minimum 35 schema fields.",
+    templateKey: "all_three",
   },
 ];
 
@@ -55,6 +52,26 @@ export default function DraftingInterface() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  /**
+   * Load a pre-saved template instantly — no LLM call.
+   * The draft appears immediately; the user can then refine it via chat.
+   */
+  function handleQuickStart(templateKey: string, label: string) {
+    if (isStreaming) return;
+
+    const template = TEMPLATES[templateKey];
+    const greeting = TEMPLATE_GREETINGS[templateKey];
+    if (!template) return;
+
+    setDraft(template);
+    setMessages([
+      { role: "user", content: `Create a detailed RFQ for ${label}` },
+      { role: "assistant", content: greeting },
+    ]);
+    // Session stays empty; first refinement message creates it
+    setSessionId(null);
+  }
 
   async function sendMessage(e: React.FormEvent, overrideText?: string) {
     e.preventDefault();
@@ -74,7 +91,14 @@ export default function DraftingInterface() {
       const res = await fetch("/api/ai/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message: userMessage, history: messages }),
+        body: JSON.stringify({
+          sessionId,
+          message: userMessage,
+          // Only send the conversational history — not the instant-loaded greeting pair
+          history: messages,
+          // Always send current draft so AI can amend it rather than starting from scratch
+          currentDraft: draft,
+        }),
       });
 
       if (!res.body) throw new Error("No stream body");
@@ -131,13 +155,6 @@ export default function DraftingInterface() {
     }
   }
 
-  function handleQuickStart(prompt: string) {
-    if (isStreaming) return;
-    setInput(prompt);
-    // Fire immediately
-    sendMessage({ preventDefault: () => {} } as React.FormEvent, prompt);
-  }
-
   async function saveDraft() {
     if (!draft?.title || isSaving) return;
     setIsSaving(true);
@@ -169,7 +186,7 @@ export default function DraftingInterface() {
         <div className="border-b border-slate-200 px-5 py-4">
           <h1 className="font-semibold text-slate-900">New RFx — AI Co-pilot</h1>
           <p className="text-xs text-slate-400">
-            Describe your sourcing need or pick a quick start below.
+            Pick a quick start for an instant draft, or describe your own sourcing need.
           </p>
         </div>
 
@@ -182,20 +199,20 @@ export default function DraftingInterface() {
                 <p className="text-4xl mb-2">🤖</p>
                 <p className="text-sm font-medium text-slate-600">AI Procurement Co-pilot</p>
                 <p className="text-xs mt-1 text-slate-400">
-                  Generates 30+ detailed fields per RFx — pricing, technical specs, compliance, sustainability & more.
+                  Quick starts load instantly. Then refine anything via chat.
                 </p>
               </div>
 
               {/* Quick-start chips */}
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-                  Quick start
+                  Quick start — instant draft
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {QUICK_STARTS.map((qs) => (
                     <button
                       key={qs.label}
-                      onClick={() => handleQuickStart(qs.prompt)}
+                      onClick={() => handleQuickStart(qs.templateKey, qs.label)}
                       disabled={isStreaming}
                       className="group flex flex-col items-start gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-left transition-all hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50"
                     >
@@ -206,6 +223,7 @@ export default function DraftingInterface() {
                       <span className="text-xs text-slate-400 group-hover:text-blue-500">
                         {qs.description}
                       </span>
+                      <span className="text-[10px] text-green-600 font-medium">⚡ Instant</span>
                     </button>
                   ))}
                 </div>
@@ -233,7 +251,7 @@ export default function DraftingInterface() {
                 </div>
               )}
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
                   msg.role === "user"
                     ? "bg-blue-600 text-white"
                     : "bg-slate-100 text-slate-800"
@@ -258,7 +276,11 @@ export default function DraftingInterface() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Describe your sourcing need…"
+              placeholder={
+                draft
+                  ? "Ask for changes — e.g. 'Add a 3-year support contract field' or 'Change payment terms to Net 60'…"
+                  : "Describe your sourcing need…"
+              }
               disabled={isStreaming}
               className="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:opacity-50"
             />
@@ -309,8 +331,10 @@ export default function DraftingInterface() {
           ) : (
             <div className="py-20 text-center text-slate-300">
               <p className="text-4xl mb-3">📄</p>
-              <p className="text-sm">Your draft will appear here as you chat.</p>
-              <p className="text-xs mt-2 text-slate-200">Expect 30+ detailed fields with help text.</p>
+              <p className="text-sm">Your draft will appear here instantly.</p>
+              <p className="text-xs mt-2 text-slate-200">
+                Pick a quick start above — 25+ fields load in under a second.
+              </p>
             </div>
           )}
         </div>
