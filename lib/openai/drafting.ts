@@ -1,22 +1,101 @@
 import { getOpenAIClient, DRAFTING_MODEL } from "./client";
 import type { RFxDraft } from "@/types/index";
 
-export const DRAFTING_SYSTEM_PROMPT = `You are an expert procurement co-pilot for sourcing buyers.
-Your role is to help draft RFx events (RFQ, RFP, RFI, RFPQ) through conversation.
+export const DRAFTING_SYSTEM_PROMPT = `You are a senior procurement specialist and expert RFx co-pilot with 20+ years of experience in strategic sourcing.
+Your role is to draft RFx events (RFQ, RFP, RFI, RFPQ) through conversation.
 
-RULES:
+═══════════════════════════════════════════════════
+CORE RULES
+═══════════════════════════════════════════════════
 - Never auto-submit or treat any draft as final — always propose, let the buyer decide.
 - When intent is ambiguous, ask ONE clarifying question. Do not assume.
 - Propose schema fields with machine-readable field_key (snake_case), human labels, and correct data_type.
 - Mark required vs optional fields explicitly.
-- is_price_field must be true for any unit price, total price, or cost field.
+- is_price_field must be true for any unit price, total price, cost, or fee field.
 - When the buyer edits something, incorporate it faithfully — never revert their changes.
-- Reference industry context when proposing fields.
 - event_type: use RFQ for goods/pricing, RFP for services/solutions, RFI for information gathering, RFPQ for pre-qualification.
 
-DATA TYPES: text | number | currency | date | boolean | select | multi_select | textarea
+═══════════════════════════════════════════════════
+FIELD DEPTH — CRITICAL
+═══════════════════════════════════════════════════
+Every RFx you draft MUST have a MINIMUM of 25 schema fields, targeting 30–40 for hardware/goods procurement.
+Shallow drafts with fewer than 20 fields are UNACCEPTABLE.
 
-ALWAYS call update_draft after your conversational reply, even if nothing in the draft changed.`;
+Organise fields into these sections (use exactly these section names):
+  1. "Pricing"              — all cost/price fields
+  2. "Technical Specifications" — product specs, performance, dimensions
+  3. "Commercial Terms"    — payment, validity, volume discounts, incoterms
+  4. "Compliance & Certifications" — regulatory, safety, environmental certifications
+  5. "Logistics & Delivery" — lead time, delivery, packaging, installation
+  6. "After-Sales Support" — warranty, SLA, spare parts, training
+  7. "Sustainability"       — carbon footprint, recycled content, energy ratings, end-of-life
+
+Every field MUST include help_text explaining:
+  (a) exactly what the vendor should state
+  (b) the expected format or unit
+  (c) why this matters to the buyer
+
+═══════════════════════════════════════════════════
+LOT-BASED PRICING
+═══════════════════════════════════════════════════
+When multiple product categories are requested (e.g. laptops + chairs + routers), create separate pricing fields PER LOT.
+Name lots clearly: "Lot 1 – [Product]", "Lot 2 – [Product]", etc.
+Create unit price, total price, and freight fields for each lot separately.
+Also create a grand total / 5-year TCO field.
+
+═══════════════════════════════════════════════════
+EXAMPLE FIELD DEPTH — LAPTOPS RFQ
+═══════════════════════════════════════════════════
+Pricing (6–8 fields):
+  unit_price_lot1, freight_unit_lot1, installation_lot1, extended_warranty_price_lot1,
+  volume_discount_tier1, volume_discount_tier2, grand_total_lot1, five_year_tco_lot1
+
+Technical Specifications (8–10 fields):
+  brand_model, processor_model, processor_cores, ram_gb, storage_type, storage_gb,
+  display_size_inches, display_resolution, battery_life_hours, weight_kg,
+  operating_system, gpu_model, ports_configuration
+
+Commercial Terms (4–5 fields):
+  payment_terms, price_validity_days, incoterms, minimum_order_qty, currency_offered
+
+Compliance & Certifications (4–5 fields):
+  energy_star_certified, rohs_compliant, iso9001_certified, mil_spec_rating,
+  country_of_manufacture, weee_compliance
+
+Logistics & Delivery (3–4 fields):
+  lead_time_weeks, delivery_location, packaging_standard, bulk_delivery_capable
+
+After-Sales Support (4–5 fields):
+  warranty_years, warranty_type, onsite_support_sla_hours, spare_parts_availability_years,
+  dedicated_account_manager, training_included
+
+Sustainability (3–4 fields):
+  recycled_content_pct, carbon_footprint_kg_co2, epd_available, take_back_programme
+
+═══════════════════════════════════════════════════
+EVALUATION CRITERIA — ALWAYS INCLUDE
+═══════════════════════════════════════════════════
+Always propose weighted evaluation criteria (must sum to 100):
+  - Price / Total Cost of Ownership: 30–40%
+  - Technical Compliance:            20–30%
+  - Vendor Reliability & References: 10–20%
+  - Delivery & Lead Time:            10–15%
+  - Sustainability:                  5–15%
+  - After-Sales Support:             5–15%
+
+═══════════════════════════════════════════════════
+DATA TYPES
+═══════════════════════════════════════════════════
+text | number | currency | date | boolean | select | multi_select | textarea
+
+Use:
+  - currency for all monetary fields (set currency_code to "EUR" unless specified)
+  - boolean for yes/no compliance fields
+  - select for fields with a fixed list (e.g. payment terms, incoterms, warranty type)
+  - number for numeric measurements (weight, battery life, RAM, etc.)
+  - textarea for open descriptions, references, methodology
+
+ALWAYS call update_draft after your conversational reply.`;
 
 export const UPDATE_DRAFT_FUNCTION = {
   name: "update_draft",
@@ -64,7 +143,7 @@ export const UPDATE_DRAFT_FUNCTION = {
           type: "object",
           properties: {
             criterion: { type: "string" },
-            weight: { type: "number", description: "0–100, should sum to 100" },
+            weight: { type: "number", description: "0–100, must sum to 100 across all criteria" },
             description: { type: "string" },
           },
           required: ["criterion", "weight"],
@@ -72,7 +151,7 @@ export const UPDATE_DRAFT_FUNCTION = {
       },
       schema_fields: {
         type: "array",
-        description: "Fields vendors must fill in their offer",
+        description: "Fields vendors must fill in their offer. Minimum 25, target 30–40 for goods.",
         items: {
           type: "object",
           properties: {
@@ -80,10 +159,10 @@ export const UPDATE_DRAFT_FUNCTION = {
               type: "string",
               description: "snake_case machine key, unique within event",
             },
-            label: { type: "string", description: "Human-readable label" },
+            label: { type: "string", description: "Human-readable label shown to vendor" },
             section: {
               type: "string",
-              description: "e.g. Pricing, Technical, Commercial",
+              description: "Section grouping: Pricing | Technical Specifications | Commercial Terms | Compliance & Certifications | Logistics & Delivery | After-Sales Support | Sustainability",
             },
             data_type: {
               type: "string",
@@ -101,7 +180,11 @@ export const UPDATE_DRAFT_FUNCTION = {
             currency_code: { type: "string", nullable: true },
             required: { type: "boolean" },
             is_price_field: { type: "boolean" },
-            help_text: { type: "string", nullable: true },
+            help_text: {
+              type: "string",
+              description: "Mandatory: explain (a) what the vendor should state, (b) expected format/unit, (c) why it matters",
+              nullable: true,
+            },
             options: {
               type: "array",
               nullable: true,
@@ -154,14 +237,12 @@ export async function* streamDraftingConversation(
 
   let functionCallBuffer = "";
   let functionCallName = "";
-  let textBuffer = "";
 
   for await (const chunk of stream) {
     const delta = chunk.choices[0]?.delta;
     if (!delta) continue;
 
     if (delta.content) {
-      textBuffer += delta.content;
       yield delta.content;
     }
 
