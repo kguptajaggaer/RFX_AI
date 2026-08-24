@@ -224,20 +224,9 @@ async function extractFromPDF(
 ): Promise<ExtractionResult[]> {
   let pdfText = "";
   try {
-    // pdf-parse dynamic import — use /lib entry to avoid the package's own test-file loader
-    // which fails in some serverless environments.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let pdfParse: any;
-    try {
-      // Try the lib entry point first (avoids test-file side-effect)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      pdfParse = ((await import("pdf-parse/lib/pdf-parse.js")) as any).default;
-    } catch {
-      // Fall back to the top-level export
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod = await import("pdf-parse") as any;
-      pdfParse = mod.default ?? mod;
-    }
+    const mod = await import("pdf-parse") as any;
+    const pdfParse = mod.default ?? mod;
     const parsed = await pdfParse(buffer);
     pdfText = parsed.text?.trim() ?? "";
   } catch (parseErr) {
