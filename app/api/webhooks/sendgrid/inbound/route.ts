@@ -6,8 +6,6 @@ import { runExtractionPipeline } from "@/lib/extraction/pipeline";
 
 export const runtime = "nodejs";
 
-// Disable Next.js body parsing — we need the raw multipart body
-export const config = { api: { bodyParser: false } };
 
 type QuarantineReason =
   | "token_not_found"
