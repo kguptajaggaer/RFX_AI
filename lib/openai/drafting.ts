@@ -133,15 +133,15 @@ export async function* streamDraftingConversation(
   const stream = await client.chat.completions.create({
     model: DRAFTING_MODEL,
     messages: [
-      { role: "system", content: systemContent },
-      ...messages,
+      { role: "system" as const, content: systemContent },
+      ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
     ],
     tools: [{ type: "function", function: UPDATE_DRAFT_FUNCTION }],
-    tool_choice: "auto",
+    tool_choice: "auto" as const,
     stream: true,
     max_tokens: 8000,
     // Disable Qwen3 chain-of-thought thinking — eliminates 20-40s thinking latency
-    // @ts-expect-error extra_body passed through to Bedrock Mantle endpoint
+    // @ts-ignore extra_body passed through to Bedrock Mantle endpoint
     extra_body: { enable_thinking: false },
   });
 
@@ -202,7 +202,7 @@ function recoverPartialDraft(raw: string): Partial<RFxDraft> | null {
 
   // Pull out complete field objects from the schema_fields array
   const fields: RFxDraft["schema_fields"] = [];
-  const fieldRegex = /\{\s*"field_key"\s*:[^}]+?"label"\s*:[^}]+?\}/gs;
+  const fieldRegex = /\{\s*"field_key"\s*:[^}]+?"label"\s*:[^}]+?\}/g;
   let m: RegExpExecArray | null;
   while ((m = fieldRegex.exec(raw)) !== null) {
     try {
