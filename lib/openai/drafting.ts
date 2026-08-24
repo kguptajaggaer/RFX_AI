@@ -1,149 +1,58 @@
 import { getOpenAIClient, DRAFTING_MODEL } from "./client";
 import type { RFxDraft } from "@/types/index";
 
-export const DRAFTING_SYSTEM_PROMPT = `You are a senior procurement specialist and expert RFx co-pilot with 20+ years of experience in strategic sourcing.
-Your role is to draft RFx events (RFQ, RFP, RFI, RFPQ) through conversation.
+export const DRAFTING_SYSTEM_PROMPT = `/no_think
+You are a senior procurement specialist helping buyers draft RFx events.
 
-═══════════════════════════════════════════════════
-CORE RULES
-═══════════════════════════════════════════════════
-- Never auto-submit or treat any draft as final — always propose, let the buyer decide.
-- When intent is ambiguous, ask ONE clarifying question. Do not assume.
-- Propose schema fields with machine-readable field_key (snake_case), human labels, and correct data_type.
-- Mark required vs optional fields explicitly.
-- is_price_field must be true for any unit price, total price, cost, or fee field.
-- When the buyer edits something, incorporate it faithfully — never revert their changes.
-- event_type: use RFQ for goods/pricing, RFP for services/solutions, RFI for information gathering, RFPQ for pre-qualification.
+RESPONSE FORMAT:
+- Text reply: 2–4 sentences only. Confirm what you drafted.
+- ALL details go into the update_draft function call, not the text.
+- Always call update_draft on every turn, even the first one.
 
-═══════════════════════════════════════════════════
-FIELD DEPTH — CRITICAL
-═══════════════════════════════════════════════════
-Every RFx you draft MUST have a MINIMUM of 25 schema fields, targeting 30–40 for hardware/goods procurement.
-Shallow drafts with fewer than 20 fields are UNACCEPTABLE.
+SCHEMA FIELDS — aim for around 20 fields for goods/hardware RFQs:
+Cover these 7 sections (use exact names as the section value):
+  "Pricing" | "Technical Specifications" | "Commercial Terms" |
+  "Compliance & Certifications" | "Logistics & Delivery" |
+  "After-Sales Support" | "Sustainability"
 
-Organise fields into these sections (use exactly these section names):
-  1. "Pricing"              — all cost/price fields
-  2. "Technical Specifications" — product specs, performance, dimensions
-  3. "Commercial Terms"    — payment, validity, volume discounts, incoterms
-  4. "Compliance & Certifications" — regulatory, safety, environmental certifications
-  5. "Logistics & Delivery" — lead time, delivery, packaging, installation
-  6. "After-Sales Support" — warranty, SLA, spare parts, training
-  7. "Sustainability"       — carbon footprint, recycled content, energy ratings, end-of-life
+Field rules:
+- is_price_field = true for every monetary field (price, cost, total, TCO, discount).
+- Use data_type "currency" with currency_code for money fields.
+- Use "boolean" for yes/no fields, "select" for fixed choices, "number" for measurements.
+- Include help_text on each field (what to state, expected unit/format, why it matters).
 
-Every field MUST include help_text explaining:
-  (a) exactly what the vendor should state
-  (b) the expected format or unit
-  (c) why this matters to the buyer
+MULTI-LOT: when multiple products are requested, create separate pricing fields per lot
+(e.g. unit_price_lot1, freight_lot1, tco_lot1) plus a grand_total field.
 
-═══════════════════════════════════════════════════
-LOT-BASED PRICING
-═══════════════════════════════════════════════════
-When multiple product categories are requested (e.g. laptops + chairs + routers), create separate pricing fields PER LOT.
-Name lots clearly: "Lot 1 – [Product]", "Lot 2 – [Product]", etc.
-Create unit price, total price, and freight fields for each lot separately.
-Also create a grand total / 5-year TCO field.
+EVALUATION CRITERIA: always propose 4–6 criteria with weights summing to 100.
 
-═══════════════════════════════════════════════════
-EXAMPLE FIELD DEPTH — LAPTOPS RFQ
-═══════════════════════════════════════════════════
-Pricing (6–8 fields):
-  unit_price_lot1, freight_unit_lot1, installation_lot1, extended_warranty_price_lot1,
-  volume_discount_tier1, volume_discount_tier2, grand_total_lot1, five_year_tco_lot1
+COMPLETENESS: only flag truly missing info as "blocking" (e.g. no title, no event_type).
+Never flag field count as blocking. Field count warnings are fine but not blocking.
 
-Technical Specifications (8–10 fields):
-  brand_model, processor_model, processor_cores, ram_gb, storage_type, storage_gb,
-  display_size_inches, display_resolution, battery_life_hours, weight_kg,
-  operating_system, gpu_model, ports_configuration
-
-Commercial Terms (4–5 fields):
-  payment_terms, price_validity_days, incoterms, minimum_order_qty, currency_offered
-
-Compliance & Certifications (4–5 fields):
-  energy_star_certified, rohs_compliant, iso9001_certified, mil_spec_rating,
-  country_of_manufacture, weee_compliance
-
-Logistics & Delivery (3–4 fields):
-  lead_time_weeks, delivery_location, packaging_standard, bulk_delivery_capable
-
-After-Sales Support (4–5 fields):
-  warranty_years, warranty_type, onsite_support_sla_hours, spare_parts_availability_years,
-  dedicated_account_manager, training_included
-
-Sustainability (3–4 fields):
-  recycled_content_pct, carbon_footprint_kg_co2, epd_available, take_back_programme
-
-═══════════════════════════════════════════════════
-EVALUATION CRITERIA — ALWAYS INCLUDE
-═══════════════════════════════════════════════════
-Always propose weighted evaluation criteria (must sum to 100):
-  - Price / Total Cost of Ownership: 30–40%
-  - Technical Compliance:            20–30%
-  - Vendor Reliability & References: 10–20%
-  - Delivery & Lead Time:            10–15%
-  - Sustainability:                  5–15%
-  - After-Sales Support:             5–15%
-
-═══════════════════════════════════════════════════
-DATA TYPES
-═══════════════════════════════════════════════════
-text | number | currency | date | boolean | select | multi_select | textarea
-
-Use:
-  - currency for all monetary fields (set currency_code to "EUR" unless specified)
-  - boolean for yes/no compliance fields
-  - select for fields with a fixed list (e.g. payment terms, incoterms, warranty type)
-  - number for numeric measurements (weight, battery life, RAM, etc.)
-  - textarea for open descriptions, references, methodology
-
-ALWAYS call update_draft after your conversational reply.`;
+event_type: RFQ = goods/pricing, RFP = services, RFI = information, RFPQ = pre-qualification.
+DATA TYPES: text | number | currency | date | boolean | select | multi_select | textarea`;
 
 export const UPDATE_DRAFT_FUNCTION = {
   name: "update_draft",
-  description:
-    "Update the current RFx draft with the latest state after each conversation turn.",
+  description: "Update the current RFx draft with the complete latest state.",
   parameters: {
     type: "object",
     properties: {
-      title: { type: "string", description: "Event title" },
-      event_type: {
-        type: "string",
-        enum: ["RFQ", "RFP", "RFI", "RFPQ"],
-      },
-      description: {
-        type: "string",
-        description: "Short description of what is being sourced",
-      },
-      background: {
-        type: "string",
-        description: "Background context for vendors",
-      },
-      submission_deadline: {
-        type: "string",
-        description: "ISO 8601 datetime or null",
-        nullable: true,
-      },
-      questions_deadline: {
-        type: "string",
-        description: "ISO 8601 datetime for vendor questions, or null",
-        nullable: true,
-      },
-      award_date: {
-        type: "string",
-        description: "Expected award date, ISO 8601 or null",
-        nullable: true,
-      },
-      late_response_rule: {
-        type: "string",
-        enum: ["reject", "hold", "accept"],
-        description: "How to handle late submissions",
-      },
+      title: { type: "string" },
+      event_type: { type: "string", enum: ["RFQ", "RFP", "RFI", "RFPQ"] },
+      description: { type: "string" },
+      background: { type: "string" },
+      submission_deadline: { type: "string", nullable: true },
+      questions_deadline: { type: "string", nullable: true },
+      award_date: { type: "string", nullable: true },
+      late_response_rule: { type: "string", enum: ["reject", "hold", "accept"] },
       evaluation_criteria: {
         type: "array",
         items: {
           type: "object",
           properties: {
             criterion: { type: "string" },
-            weight: { type: "number", description: "0–100, must sum to 100 across all criteria" },
+            weight: { type: "number" },
             description: { type: "string" },
           },
           required: ["criterion", "weight"],
@@ -151,49 +60,27 @@ export const UPDATE_DRAFT_FUNCTION = {
       },
       schema_fields: {
         type: "array",
-        description: "Fields vendors must fill in their offer. Minimum 25, target 30–40 for goods.",
+        description: "~20 fields for goods RFQs, covering pricing, technical, commercial, compliance, logistics, support, and sustainability.",
         items: {
           type: "object",
           properties: {
-            field_key: {
-              type: "string",
-              description: "snake_case machine key, unique within event",
-            },
-            label: { type: "string", description: "Human-readable label shown to vendor" },
-            section: {
-              type: "string",
-              description: "Section grouping: Pricing | Technical Specifications | Commercial Terms | Compliance & Certifications | Logistics & Delivery | After-Sales Support | Sustainability",
-            },
+            field_key: { type: "string", description: "snake_case, unique" },
+            label: { type: "string" },
+            section: { type: "string" },
             data_type: {
               type: "string",
-              enum: [
-                "text",
-                "number",
-                "currency",
-                "date",
-                "boolean",
-                "select",
-                "multi_select",
-                "textarea",
-              ],
+              enum: ["text", "number", "currency", "date", "boolean", "select", "multi_select", "textarea"],
             },
             currency_code: { type: "string", nullable: true },
             required: { type: "boolean" },
             is_price_field: { type: "boolean" },
-            help_text: {
-              type: "string",
-              description: "Mandatory: explain (a) what the vendor should state, (b) expected format/unit, (c) why it matters",
-              nullable: true,
-            },
+            help_text: { type: "string", nullable: true },
             options: {
               type: "array",
               nullable: true,
               items: {
                 type: "object",
-                properties: {
-                  value: { type: "string" },
-                  label: { type: "string" },
-                },
+                properties: { value: { type: "string" }, label: { type: "string" } },
               },
             },
           },
@@ -202,7 +89,7 @@ export const UPDATE_DRAFT_FUNCTION = {
       },
       completeness_issues: {
         type: "array",
-        description: "Fields or sections that are missing or incomplete",
+        description: "Only truly blocking issues (missing title/event_type). Never flag field count as blocking.",
         items: {
           type: "object",
           properties: {
@@ -233,6 +120,10 @@ export async function* streamDraftingConversation(
     tools: [{ type: "function", function: UPDATE_DRAFT_FUNCTION }],
     tool_choice: "auto",
     stream: true,
+    max_tokens: 8000,
+    // Disable Qwen3 chain-of-thought thinking — eliminates 20-40s thinking latency
+    // @ts-expect-error extra_body passed through to Bedrock Mantle endpoint
+    extra_body: { enable_thinking: false },
   });
 
   let functionCallBuffer = "";
@@ -264,10 +155,61 @@ export async function* streamDraftingConversation(
     ) {
       try {
         const draft = JSON.parse(functionCallBuffer) as Partial<RFxDraft>;
+        // Strip any blocking completeness issues about field count — those are warnings only
+        if (draft.completeness_issues) {
+          draft.completeness_issues = draft.completeness_issues.map((issue) =>
+            issue.field === "schema_fields" && issue.severity === "blocking"
+              ? { ...issue, severity: "warning" }
+              : issue
+          );
+        }
         onDraftUpdate(draft);
       } catch {
-        // Malformed JSON from stream — ignore
+        // Malformed / truncated JSON — recover whatever fields we can
+        const partial = recoverPartialDraft(functionCallBuffer);
+        if (partial) onDraftUpdate(partial);
       }
     }
   }
+}
+
+/**
+ * Best-effort recovery when the model's JSON tool call is truncated mid-stream.
+ * Extracts the title, event_type, and any complete field objects.
+ */
+function recoverPartialDraft(raw: string): Partial<RFxDraft> | null {
+  const titleMatch = raw.match(/"title"\s*:\s*"([^"]+)"/);
+  const typeMatch  = raw.match(/"event_type"\s*:\s*"(RFQ|RFP|RFI|RFPQ)"/);
+
+  // Pull out complete field objects from the schema_fields array
+  const fields: RFxDraft["schema_fields"] = [];
+  // Match objects that have at minimum field_key and label
+  const fieldRegex = /\{\s*"field_key"\s*:[^}]+?"label"\s*:[^}]+?\}/gs;
+  let m: RegExpExecArray | null;
+  while ((m = fieldRegex.exec(raw)) !== null) {
+    try {
+      // Close the object and try to parse
+      const candidate = m[0].endsWith("}") ? m[0] : m[0] + "}";
+      const f = JSON.parse(candidate);
+      if (f.field_key && f.label && f.data_type) {
+        fields.push({
+          field_key: f.field_key,
+          label: f.label,
+          section: f.section ?? "General",
+          data_type: f.data_type,
+          required: f.required ?? false,
+          is_price_field: f.is_price_field ?? false,
+          help_text: f.help_text ?? null,
+        });
+      }
+    } catch { /* skip */ }
+  }
+
+  if (!titleMatch && fields.length === 0) return null;
+
+  return {
+    title: titleMatch?.[1] ?? "Draft RFx",
+    event_type: (typeMatch?.[1] as RFxDraft["event_type"]) ?? "RFQ",
+    schema_fields: fields,
+  };
 }

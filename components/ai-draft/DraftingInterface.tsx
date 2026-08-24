@@ -280,8 +280,8 @@ export default function DraftingInterface() {
             <h2 className="font-semibold text-slate-900">Draft Preview</h2>
             <div className="flex items-center gap-3 mt-0.5">
               {fieldCount > 0 && (
-                <span className={`text-xs font-medium ${fieldCount >= 25 ? "text-green-600" : "text-orange-500"}`}>
-                  {fieldCount} fields {fieldCount >= 25 ? "✓" : `(target: 25+)`}
+                <span className="text-xs font-medium text-slate-400">
+                  {fieldCount} fields drafted
                 </span>
               )}
               {draft?.completeness_issues && draft.completeness_issues.filter(i => i.severity === "blocking").length > 0 && (
