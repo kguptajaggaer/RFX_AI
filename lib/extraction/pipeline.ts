@@ -191,9 +191,13 @@ async function extractFromText(
     .map((f) => `- ${f.field_key} (${f.label}): ${f.data_type}${f.is_price_field ? " [PRICE FIELD]" : ""}`)
     .join("\n");
 
-  const response = await client.chat.completions.create({
+  // NOTE: response_format is intentionally omitted — Qwen3-32B via Bedrock Mantle does not
+  // support the json_object response_format parameter. The system prompt already enforces JSON.
+  // extra_body disables Qwen3 chain-of-thought thinking, which otherwise wastes ~20-40s silently.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const extractParams: any = {
     model: EXTRACTION_MODEL,
-    response_format: { type: "json_object" },
+    max_tokens: 4000,
     messages: [
       { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
       {
@@ -201,7 +205,10 @@ async function extractFromText(
         content: `SCHEMA FIELDS TO EXTRACT:\n${schemaDescription}\n\nDOCUMENT TEXT:\n${text.substring(0, 60000)}`,
       },
     ],
-  });
+    extra_body: { enable_thinking: false },
+  };
+
+  const response = await (client.chat.completions.create(extractParams) as unknown as Promise<{ choices: Array<{ message?: { content?: string | null } }> }>);
 
   return parseExtractionResponse(
     response.choices[0]?.message?.content ?? "{}",
@@ -215,30 +222,39 @@ async function extractFromPDF(
   schema: RFxSchemaField[],
   attachmentId: string
 ): Promise<ExtractionResult[]> {
-  // Dynamic import to avoid build issues
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfParse = (await import("pdf-parse") as any).default ?? (await import("pdf-parse"));
+  let pdfText = "";
   try {
-    const parsed = await pdfParse(buffer);
-    const text = parsed.text?.trim() ?? "";
-    if (text.length > 0) {
-      // Use whatever text was extracted — even sparse PDFs may have enough for fields
-      return extractFromText(text, schema, "llm_text", attachmentId);
+    // pdf-parse dynamic import — use /lib entry to avoid the package's own test-file loader
+    // which fails in some serverless environments.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pdfParse: any;
+    try {
+      // Try the lib entry point first (avoids test-file side-effect)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pdfParse = ((await import("pdf-parse/lib/pdf-parse.js")) as any).default;
+    } catch {
+      // Fall back to the top-level export
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mod = await import("pdf-parse") as any;
+      pdfParse = mod.default ?? mod;
     }
-    // Zero text means a scanned/image-only PDF — vision not available with current model
+    const parsed = await pdfParse(buffer);
+    pdfText = parsed.text?.trim() ?? "";
+  } catch (parseErr) {
     throw new Error(
-      "This PDF contains no selectable text (it may be a scanned image). " +
-      "Please copy the text manually and paste it into the text area, or use a text-based PDF."
-    );
-  } catch (err) {
-    // Re-throw user-friendly errors directly
-    if (err instanceof Error && err.message.includes("no selectable text")) throw err;
-    // pdf-parse hard failure (encrypted, corrupted, etc.)
-    throw new Error(
-      `Could not parse PDF: ${err instanceof Error ? err.message : String(err)}. ` +
-      "Please paste the offer text manually."
+      `Could not parse PDF: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. ` +
+      "Please paste the offer text manually into the text area."
     );
   }
+
+  if (pdfText.length === 0) {
+    throw new Error(
+      "This PDF contains no selectable text (it may be a scanned image). " +
+      "Please copy the vendor's response text and paste it into the text area manually."
+    );
+  }
+
+  return extractFromText(pdfText, schema, "llm_text", attachmentId);
 }
 
 async function extractFromSpreadsheet(
