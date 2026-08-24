@@ -145,10 +145,11 @@ export async function* streamDraftingConversation(
     max_tokens: 8000,
     extra_body: { enable_thinking: false }, // disables Qwen3 CoT — eliminates 20-40s latency
   };
-  // APIPromise<Stream<T>> is directly async-iterable; cast via unknown so TypeScript
-  // doesn't try to resolve the overload return type from the `any` params above.
+  // Await the APIPromise to get the Stream<T>, then iterate.
+  // Double-cast via unknown → Promise<AsyncIterable<any>> to satisfy TypeScript
+  // without triggering the overload mismatch from the `any`-typed params above.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stream = client.chat.completions.create(createParams) as unknown as AsyncIterable<any>;
+  const stream: AsyncIterable<any> = await (client.chat.completions.create(createParams) as unknown as Promise<AsyncIterable<any>>);
 
   let functionCallBuffer = "";
   let functionCallName = "";
