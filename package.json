@@ -39,6 +39,7 @@
     "react-dom": "19.2.8",
     "react-dropzone": "^20.1.1",
     "tailwind-merge": "^3.6.0",
+    "unpdf": "^1.8.1",
     "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },

@@ -224,11 +224,13 @@ async function extractFromPDF(
 ): Promise<ExtractionResult[]> {
   let pdfText = "";
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod = await import("pdf-parse") as any;
-    const pdfParse = mod.default ?? mod;
-    const parsed = await pdfParse(buffer);
-    pdfText = parsed.text?.trim() ?? "";
+    // Use unpdf — a serverless-safe PDF text extractor that bundles its own
+    // pdfjs-dist polyfills so DOM APIs (DOMMatrix, Path2D, etc.) are not needed.
+    // pdf-parse uses pdfjs-dist 3.x which requires DOMMatrix, breaking Vercel serverless.
+    const { getDocumentProxy, extractText } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const { text } = await extractText(pdf, { mergePages: true });
+    pdfText = text?.trim() ?? "";
   } catch (parseErr) {
     throw new Error(
       `Could not parse PDF: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. ` +
