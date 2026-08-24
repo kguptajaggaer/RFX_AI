@@ -130,20 +130,22 @@ export async function* streamDraftingConversation(
     systemContent += `\n\n---\nCURRENT DRAFT STATE (amend this — do NOT start from scratch):\n${JSON.stringify(currentDraft, null, 2)}\n---\n\nThe user wants to refine the draft above. Preserve all existing fields and only make the changes they request. In your text reply, be specific about exactly what changed.`;
   }
 
-  const stream = await client.chat.completions.create({
+  // Build params as `any` so extra_body (Bedrock Mantle / Qwen3 flag) does not
+  // trigger TypeScript excess-property checking which rejects all create() overloads.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const createParams: any = {
     model: DRAFTING_MODEL,
     messages: [
-      { role: "system" as const, content: systemContent },
-      ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      { role: "system", content: systemContent },
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
     ],
     tools: [{ type: "function", function: UPDATE_DRAFT_FUNCTION }],
-    tool_choice: "auto" as const,
+    tool_choice: "auto",
     stream: true,
     max_tokens: 8000,
-    // Disable Qwen3 chain-of-thought thinking — eliminates 20-40s thinking latency
-    // @ts-ignore extra_body passed through to Bedrock Mantle endpoint
-    extra_body: { enable_thinking: false },
-  });
+    extra_body: { enable_thinking: false }, // disables Qwen3 CoT — eliminates 20-40s latency
+  };
+  const stream = await client.chat.completions.create(createParams);
 
   let functionCallBuffer = "";
   let functionCallName = "";
