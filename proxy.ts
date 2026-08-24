@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -36,6 +36,7 @@ export async function middleware(request: NextRequest) {
   const publicPaths = [
     "/login",
     "/auth/callback",
+    "/api/auth/signup",   // server-side signup — no email, no auth required
     "/vendor/",
     "/api/webhooks/",
     "/api/vendor-portal/",

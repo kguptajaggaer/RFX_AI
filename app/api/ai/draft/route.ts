@@ -13,17 +13,38 @@ export async function POST(request: NextRequest) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { data: profile } = await supabase
+  const serviceClient = createServiceClient();
+
+  let { data: profile } = await supabase
     .from("profiles")
     .select("tenant_id")
     .eq("id", user.id)
     .single();
+
+  // Auto-provision profile if missing (new user)
+  if (!profile) {
+    const email = user.email ?? "";
+    const domain = email.split("@")[1] ?? "company.com";
+    const slug = domain.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+    const name = domain.split(".")[0];
+    const { data: tenant } = await serviceClient
+      .from("tenants")
+      .upsert({ name, slug, inbound_email_domain: "inbound.rfxai.com" }, { onConflict: "slug" })
+      .select("id").single();
+    if (tenant) {
+      const { data: newProfile } = await serviceClient
+        .from("profiles")
+        .insert({ id: user.id, tenant_id: tenant.id, email, role: "admin" })
+        .select("tenant_id").single();
+      profile = newProfile;
+    }
+  }
+
   if (!profile) return NextResponse.json({ error: "Profile not found" }, { status: 403 });
 
   const { sessionId, message, history = [] } = await request.json();
 
   // Load existing session messages if resuming
-  const serviceClient = createServiceClient();
   let existingMessages: Array<{ role: "user" | "assistant"; content: string }> = history;
   let currentSessionId: string | null = sessionId ?? null;
 

@@ -15,7 +15,6 @@ interface SidebarProps {
 }
 
 const NAV = [
-  { label: "Dashboard", href: "/", icon: "⬛" },
   { label: "Events", href: "/events", icon: "📋" },
   { label: "Quarantine", href: "/quarantine", icon: "🔒" },
   { label: "Settings", href: "/settings", icon: "⚙️" },
@@ -47,10 +46,7 @@ export default function Sidebar({ profile }: SidebarProps) {
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 px-3 py-4">
         {NAV.map((item) => {
-          const isActive =
-            item.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(item.href);
+          const isActive = pathname.startsWith(item.href);
           return (
             <Link
               key={item.href}

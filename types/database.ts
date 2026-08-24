@@ -132,6 +132,8 @@ export interface Database {
           status?: "quarantined" | "received" | "extracting" | "extracted" | "under_review" | "confirmed" | "disqualified" | "late";
           extraction_status?: "pending" | "queued" | "in_progress" | "completed" | "failed" | "manual_required";
           extraction_job_id?: string | null; extraction_error?: string | null; is_late?: boolean;
+          email_subject?: string | null; email_body_text?: string | null; email_body_html?: string | null;
+          submission_channel?: "portal" | "email" | "manual" | null;
         };
         Relationships: [];
       };

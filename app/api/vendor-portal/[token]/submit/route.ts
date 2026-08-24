@@ -41,7 +41,15 @@ export async function POST(
     return NextResponse.json({ error: "The submission deadline has passed" }, { status: 410 });
   }
 
-  const formData = await request.formData();
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid form submission — please use the portal form to submit" },
+      { status: 400 }
+    );
+  }
   const emailBody = formData.get("emailBody") as string | null;
   const files = formData.getAll("files") as File[];
 

@@ -4,21 +4,35 @@ import { scoreToLabel } from "./confidence";
 import type { ExtractionResult, RFxSchemaField, SourceRef } from "@/types/index";
 
 const EXTRACTION_SYSTEM_PROMPT = `You are a precision data extraction engine for procurement offers.
-You receive an RFx event schema and a vendor offer document.
-Extract values for each schema field from the document.
+You receive an RFx schema (list of required fields) and a vendor offer document.
+Your job: extract the value of EVERY schema field from the document.
+
+OUTPUT FORMAT — return a single JSON object where each key is a field_key from the schema:
+{
+  "<field_key>": {
+    "raw_text": "<verbatim text from document, or null if not found>",
+    "normalized_value": <extracted value in correct type, or null if not found>,
+    "confidence_score": <0.0–1.0>,
+    "source_location": "<page/line/cell reference, or null>"
+  },
+  ...
+}
 
 RULES:
-- Only extract from the provided document. Do not infer, assume, or fill in from prior knowledge.
-- For each field: provide the verbatim raw_text from the document, a normalized_value, a confidence_score (0.0–1.0), and the source location.
-- Confidence calibration:
-  * 0.95–1.0: Exact label match, unambiguous value, single occurrence
-  * 0.70–0.94: Similar label, value parseable, single occurrence
-  * 0.40–0.69: Inferred from context, multiple possible matches
-  * 0.00–0.39: Highly uncertain or no reliable match
-  * 0.00: Field not present in document (confidence_label = "not_found")
-- For currency fields: always capture both amount and currency code.
-- For price fields: a wrong price or currency is a critical extraction failure — prefer "not_found" over a guess.
-- Provide source_location as precisely as possible (page, char_offset or bbox, cell_ref, etc.).`;
+1. Include EVERY field_key from the schema in your response, even if not found (use confidence_score: 0.0, normalized_value: null).
+2. Only extract from the provided document — do NOT infer or guess values not present.
+3. For number fields: normalized_value must be a number (e.g. 42, not "42").
+4. For currency fields: normalized_value = { "value": <number>, "currency": "<3-letter code>" }.
+5. For boolean/select fields: normalized_value = the exact matched option string or true/false.
+6. For multi_select fields: normalized_value = array of matched option strings.
+7. Confidence calibration:
+   - 0.95–1.0: Exact label match, unambiguous, single occurrence
+   - 0.70–0.94: Similar label or paraphrased, value clearly parseable
+   - 0.40–0.69: Inferred from context, multiple possible matches
+   - 0.01–0.39: Very uncertain
+   - 0.00: Not present in document at all
+8. For PRICE FIELDs: prefer confidence 0.00 + null value over a guess.
+9. raw_text must be the verbatim text snippet from the document (not "not_found").`;
 
 interface ExtractionInput {
   submissionId: string;
@@ -26,7 +40,7 @@ interface ExtractionInput {
   eventId: string;
 }
 
-export async function runExtractionPipeline(input: ExtractionInput): Promise<void> {
+export async function runExtractionPipeline(input: ExtractionInput): Promise<{ warnings?: string[] }> {
   const supabase = createServiceClient();
 
   // Mark as in_progress
@@ -70,7 +84,8 @@ export async function runExtractionPipeline(input: ExtractionInput): Promise<voi
       allResults.push(...bodyResults);
     }
 
-    // Extract from each attachment
+    // Extract from each attachment (errors are soft — one bad file won't kill other sources)
+    const attachmentErrors: string[] = [];
     for (const attachment of attachments ?? []) {
       const { data: fileData } = await supabase.storage
         .from("offer-documents")
@@ -79,27 +94,36 @@ export async function runExtractionPipeline(input: ExtractionInput): Promise<voi
       if (!fileData) continue;
 
       const buffer = Buffer.from(await fileData.arrayBuffer());
-      let results: ExtractionResult[] = [];
 
-      if (attachment.mime_type.includes("pdf")) {
-        results = await extractFromPDF(buffer, schema, attachment.id);
-      } else if (
-        attachment.mime_type.includes("spreadsheet") ||
-        attachment.mime_type.includes("excel") ||
-        attachment.original_filename.endsWith(".xlsx") ||
-        attachment.original_filename.endsWith(".csv")
-      ) {
-        results = await extractFromSpreadsheet(buffer, schema, attachment.id);
-      } else if (
-        attachment.mime_type.includes("word") ||
-        attachment.original_filename.endsWith(".docx")
-      ) {
-        results = await extractFromDocx(buffer, schema, attachment.id);
-      } else if (attachment.mime_type.startsWith("image/")) {
-        results = await extractFromImage(buffer, schema, attachment.id, attachment.mime_type);
+      try {
+        let results: ExtractionResult[] = [];
+        if (attachment.mime_type.includes("pdf")) {
+          results = await extractFromPDF(buffer, schema, attachment.id);
+        } else if (
+          attachment.mime_type.includes("spreadsheet") ||
+          attachment.mime_type.includes("excel") ||
+          attachment.original_filename.endsWith(".xlsx") ||
+          attachment.original_filename.endsWith(".csv")
+        ) {
+          results = await extractFromSpreadsheet(buffer, schema, attachment.id);
+        } else if (
+          attachment.mime_type.includes("word") ||
+          attachment.original_filename.endsWith(".docx")
+        ) {
+          results = await extractFromDocx(buffer, schema, attachment.id);
+        } else if (attachment.mime_type.startsWith("image/")) {
+          results = await extractFromImage(buffer, schema, attachment.id, attachment.mime_type);
+        }
+        allResults.push(...results);
+      } catch (attachErr) {
+        const msg = attachErr instanceof Error ? attachErr.message : String(attachErr);
+        attachmentErrors.push(`${attachment.original_filename}: ${msg}`);
       }
+    }
 
-      allResults.push(...results);
+    // If every source failed (no text body, all attachments errored), surface a clear message
+    if (allResults.length === 0 && !submission.email_body_text && attachmentErrors.length > 0) {
+      throw new Error(attachmentErrors.join(" | "));
     }
 
     // Merge and detect conflicts between email body and attachments
@@ -125,21 +149,31 @@ export async function runExtractionPipeline(input: ExtractionInput): Promise<voi
       conflict_detail: r.conflict_detail as import("@/types/database").Json ?? null,
     }));
 
-    await supabase.from("extracted_values").insert(rows);
+    if (rows.length > 0) {
+      await supabase.from("extracted_values").insert(rows);
+    }
 
-    // Mark completed
+    // Mark completed — store any attachment warnings in extraction_error as info
     await supabase
       .from("offer_submissions")
-      .update({ extraction_status: "completed", status: "extracted" })
+      .update({
+        extraction_status: "completed",
+        status: "extracted",
+        ...(attachmentErrors.length > 0
+          ? { extraction_error: "WARN: " + attachmentErrors.join(" | ") }
+          : { extraction_error: null }),
+      })
       .eq("id", input.submissionId);
 
     // Rebuild comparison grid cache
     await rebuildGridCache(input.eventId, input.tenantId);
+
+    return attachmentErrors.length > 0 ? { warnings: attachmentErrors } : {};
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await supabase
       .from("offer_submissions")
-      .update({ extraction_status: "queued", extraction_error: message })
+      .update({ extraction_status: "failed", extraction_error: message })
       .eq("id", input.submissionId);
     throw err;
   }
@@ -186,15 +220,25 @@ async function extractFromPDF(
   const pdfParse = (await import("pdf-parse") as any).default ?? (await import("pdf-parse"));
   try {
     const parsed = await pdfParse(buffer);
-    if (parsed.text.trim().length > 100) {
-      // Has selectable text — use text extraction
-      return extractFromText(parsed.text, schema, "llm_text", attachmentId);
+    const text = parsed.text?.trim() ?? "";
+    if (text.length > 0) {
+      // Use whatever text was extracted — even sparse PDFs may have enough for fields
+      return extractFromText(text, schema, "llm_text", attachmentId);
     }
-  } catch {
-    // Fall through to Vision
+    // Zero text means a scanned/image-only PDF — vision not available with current model
+    throw new Error(
+      "This PDF contains no selectable text (it may be a scanned image). " +
+      "Please copy the text manually and paste it into the text area, or use a text-based PDF."
+    );
+  } catch (err) {
+    // Re-throw user-friendly errors directly
+    if (err instanceof Error && err.message.includes("no selectable text")) throw err;
+    // pdf-parse hard failure (encrypted, corrupted, etc.)
+    throw new Error(
+      `Could not parse PDF: ${err instanceof Error ? err.message : String(err)}. ` +
+      "Please paste the offer text manually."
+    );
   }
-  // Scanned PDF — fall through to Vision
-  return extractFromImage(buffer, schema, attachmentId, "application/pdf");
 }
 
 async function extractFromSpreadsheet(
@@ -226,41 +270,19 @@ async function extractFromDocx(
 }
 
 async function extractFromImage(
-  buffer: Buffer,
-  schema: RFxSchemaField[],
-  attachmentId: string,
+  _buffer: Buffer,
+  _schema: RFxSchemaField[],
+  _attachmentId: string,
   mimeType: string
 ): Promise<ExtractionResult[]> {
-  const client = getOpenAIClient();
-  const base64 = buffer.toString("base64");
-  const dataUrl = `data:${mimeType === "application/pdf" ? "image/jpeg" : mimeType};base64,${base64}`;
-
-  const schemaDescription = schema
-    .map((f) => `- ${f.field_key} (${f.label}): ${f.data_type}${f.is_price_field ? " [PRICE FIELD]" : ""}`)
-    .join("\n");
-
-  const response = await client.chat.completions.create({
-    model: VISION_MODEL,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `SCHEMA FIELDS TO EXTRACT:\n${schemaDescription}\n\nFor each found value, include bbox as [left, top, width, height] as fractions of page dimensions (0.0–1.0).\n\nReturn JSON with "fields" array.`,
-          },
-          { type: "image_url", image_url: { url: dataUrl, detail: "high" } },
-        ],
-      },
-    ],
-  });
-
-  return parseExtractionResponse(
-    response.choices[0]?.message?.content ?? "{}",
-    schema,
-    "llm_vision"
+  // qwen.qwen3-32b does not support vision/image input.
+  // If a vision-capable model becomes available, set OPENAI_VISION_MODEL in .env.local.
+  // For now, image files cannot be auto-extracted — instruct the user to paste text.
+  const ext = mimeType.split("/")[1] ?? mimeType;
+  throw new Error(
+    `Image extraction is not supported by the current model (${VISION_MODEL}). ` +
+    `The uploaded ${ext.toUpperCase()} file cannot be read automatically. ` +
+    "Please paste the offer text manually into the text area instead."
   );
 }
 
@@ -269,35 +291,77 @@ function parseExtractionResponse(
   schema: RFxSchemaField[],
   method: ExtractionResult["extraction_method"]
 ): ExtractionResult[] {
-  let parsed: { fields?: unknown[] } = {};
+  let parsed: Record<string, unknown> = {};
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
     return [];
   }
 
-  const fields = Array.isArray(parsed.fields) ? parsed.fields : [];
-  return fields.map((f: unknown) => {
-    const field = f as Record<string, unknown>;
-    const score = typeof field.confidence_score === "number" ? field.confidence_score : 0;
-    const schemaField = schema.find((s) => s.field_key === field.field_key);
-    return {
-      field_key: String(field.field_key ?? ""),
-      raw_text: field.raw_text ? String(field.raw_text) : null,
-      normalized_value: field.normalized_value ?? null,
-      confidence_score: score,
-      confidence_label: scoreToLabel(score),
-      source_ref: (field.source_location ?? field.source_ref ?? null) as SourceRef | null,
-      extraction_method: method,
-      is_flagged:
-        schemaField?.is_price_field === true && score < 0.5,
-      flag_reason:
-        schemaField?.is_price_field && score < 0.5
-          ? "Low-confidence price field — requires buyer confirmation"
-          : undefined,
-      has_conflict: false,
-    };
-  });
+  // Normalise two LLM output formats into one list of items:
+  //
+  // Format A — { "fields": [ { field_key, raw_text, normalized_value, ... }, ... ] }
+  //   (what the prompt asks for)
+  //
+  // Format B — { "field_key": { raw_text, normalized_value, ... }, ... }
+  //   (flat object; qwen3-32b often uses this despite the prompt)
+  //
+  // Format C — { "field_key": { value, confidence, ... } }
+  //   (another common variant)
+
+  let items: Array<Record<string, unknown>>;
+
+  if (Array.isArray(parsed.fields)) {
+    // Format A
+    items = parsed.fields as Array<Record<string, unknown>>;
+  } else {
+    // Format B / C — every top-level key IS a field_key
+    items = Object.entries(parsed)
+      .filter(([, val]) => val !== null && typeof val === "object")
+      .map(([key, val]) => {
+        const v = val as Record<string, unknown>;
+        return {
+          field_key: key,
+          // support both raw_text and text aliases
+          raw_text: v.raw_text ?? v.text ?? v.raw ?? null,
+          // support both normalized_value and value aliases
+          normalized_value: v.normalized_value ?? v.value ?? v.normalized ?? null,
+          confidence_score: v.confidence_score ?? v.confidence ?? 0,
+          source_location: v.source_location ?? v.source_ref ?? v.location ?? null,
+        };
+      });
+  }
+
+  const schemaKeys = new Set(schema.map((s) => s.field_key));
+
+  return items
+    .filter((item) => {
+      const key = String(item.field_key ?? "");
+      return key.length > 0 && schemaKeys.has(key);   // only keep fields in our schema
+    })
+    .map((item) => {
+      const score = typeof item.confidence_score === "number" ? item.confidence_score : 0;
+      const rawText = item.raw_text ? String(item.raw_text) : null;
+      // Treat the string literal "not_found" (some models write it) as null
+      const cleanRaw = rawText === "not_found" ? null : rawText;
+      const normVal  = item.normalized_value === "not_found" ? null : (item.normalized_value ?? null);
+      const schemaField = schema.find((s) => s.field_key === String(item.field_key));
+      return {
+        field_key: String(item.field_key),
+        raw_text: cleanRaw,
+        normalized_value: normVal,
+        confidence_score: score,
+        confidence_label: scoreToLabel(score),
+        source_ref: (item.source_location ?? null) as SourceRef | null,
+        extraction_method: method,
+        is_flagged: schemaField?.is_price_field === true && score < 0.5,
+        flag_reason:
+          schemaField?.is_price_field && score < 0.5
+            ? "Low-confidence price field — requires buyer confirmation"
+            : undefined,
+        has_conflict: false,
+      };
+    });
 }
 
 function mergeResults(
