@@ -12,7 +12,14 @@ export function buildReplyEmail(inviteToken: string): string {
 }
 
 export function buildPortalUrl(inviteToken: string): string {
-  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  // Priority: explicit env var → Vercel's auto-injected production URL → localhost fallback
+  const base =
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000");
   return `${base}/vendor/${inviteToken}`;
 }
 
